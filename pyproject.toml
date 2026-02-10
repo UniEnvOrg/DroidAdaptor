@@ -1,6 +1,6 @@
 [project]
 name = "unienv_droid"
-version = "0.0.1a1"
+version = "0.0.1a2"
 requires-python = ">= 3.10"
 dependencies = [
     "unienv",
@@ -16,6 +16,12 @@ env = [
     "droid"
 ]
 
+[project.urls]
+Homepage = "https://github.com/UniEnvOrg/DroidAdaptor"
+Documentation = "https://github.com/UniEnvOrg/DroidAdaptor"
+Repository = "https://github.com/UniEnvOrg/DroidAdaptor"
+Issues = "https://github.com/UniEnvOrg/DroidAdaptor/issues"
+Changelog = "https://github.com/UniEnvOrg/DroidAdaptor/blob/main/CHANGELOG.md"
 
 [tool.setuptools.packages.find]
 include = ["*"]
