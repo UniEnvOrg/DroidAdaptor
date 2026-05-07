@@ -200,9 +200,20 @@ def read_camera_SVO(
     SVO_folder = os.path.join(episode_dir, 'recordings', 'SVO')
     
     # Returns the ext1, ext2, wrist depth + RGB data (in that order).
-    ext1_SVO = os.path.join(SVO_folder, metadata.ext1_cam_serial + '.svo')
-    ext2_SVO = os.path.join(SVO_folder, metadata.ext2_cam_serial + '.svo')
-    wrist_SVO = os.path.join(SVO_folder, metadata.wrist_cam_serial + '.svo')
+    if os.path.exists(os.path.join(SVO_folder, metadata.ext1_cam_serial + '.svo2')):
+        ext1_SVO = os.path.join(SVO_folder, metadata.ext1_cam_serial + '.svo2')
+    else:
+        ext1_SVO = os.path.join(SVO_folder, metadata.ext1_cam_serial + '.svo')
+    
+    if os.path.exists(os.path.join(SVO_folder, metadata.ext2_cam_serial + '.svo2')):
+        ext2_SVO = os.path.join(SVO_folder, metadata.ext2_cam_serial + '.svo2')
+    else:
+        ext2_SVO = os.path.join(SVO_folder, metadata.ext2_cam_serial + '.svo')
+
+    if os.path.exists(os.path.join(SVO_folder, metadata.wrist_cam_serial + '.svo2')):
+        wrist_SVO = os.path.join(SVO_folder, metadata.wrist_cam_serial + '.svo2')
+    else:
+        wrist_SVO = os.path.join(SVO_folder, metadata.wrist_cam_serial + '.svo')
 
     assert os.path.exists(ext1_SVO), f"Exterior camera 1 SVO file not found: {ext1_SVO}"
     assert os.path.exists(ext2_SVO), f"Exterior camera 2 SVO file not found: {ext2_SVO}"
