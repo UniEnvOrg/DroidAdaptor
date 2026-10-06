@@ -425,6 +425,12 @@ class DroidEnv(Env[
         rotation_matrix = np.stack([vec1, vec2, vec3], axis=0)
         return np.asarray(tr3d.euler.mat2euler(rotation_matrix), dtype=np.float32)
     
+    # Distance (m) from the FR3 flange origin to the gripper fingertip along
+    # the tool (+z) axis. 0.159 m matches the mujoco_menagerie
+    # franka_fr3_robotiq_2f85 CAD model (g_base -> fingertip), so sim and real
+    # share one EEF convention. (DROID's historical measured value was 0.152 m.)
+    TIP_EEF_OFFSET = 0.159
+
     @staticmethod
     def transform_tip_action_to_droid(
         action: np.ndarray
@@ -432,17 +438,17 @@ class DroidEnv(Env[
         eef_euler = action[3:6]
         eef_rotation_matrix = tr3d.euler.euler2mat(*eef_euler)
         return np.concatenate([
-            action[:3] - eef_rotation_matrix[:, 2] * 0.152,
+            action[:3] - eef_rotation_matrix[:, 2] * DroidEnv.TIP_EEF_OFFSET,
             action[3:]
         ])
-    
+
     @staticmethod
     def transform_droid_eef_location_to_tip(
         action: np.ndarray,
         eef_rotation_matrix: np.ndarray
     ) -> np.ndarray:
         return np.concatenate([
-            action[:3] + eef_rotation_matrix[:, 2] * 0.152,
+            action[:3] + eef_rotation_matrix[:, 2] * DroidEnv.TIP_EEF_OFFSET,
             action[3:]
         ])
 
