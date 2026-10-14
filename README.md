@@ -30,10 +30,17 @@ env = DroidEnv(robotenv)
 ctx, obs, info = env.reset()
 while True:
     action = env.sample_action()
-    ctx, obs, reward, terminated, truncated, info = env.step(action)
+    obs, reward, terminated, truncated, info = env.step(action)
     if terminated or truncated:
         break
 ```
+
+Each camera is exposed as `obs["cam_<serial>"]` with `rgb` (`uint8`, RGB),
+`depth`, `intrinsics` (OpenCV `3x3`) and `extrinsics` (world -> camera, `3x4`).
+For stereo ZED cameras this is the left stream; pass
+`include_right_images=True` to also get `cam_<serial>_right`.
+`env.camera_types` maps each camera name to its type (`0` = wrist,
+`1` = exterior).
 
 
 ## Usage of Droid Raw Data to retrieve depth

@@ -1,1 +1,1 @@
-from .env_wrapper import DroidEnv
+from .env_wrapper import DroidEnv, DroidCamera

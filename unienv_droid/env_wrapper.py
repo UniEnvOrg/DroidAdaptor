@@ -1,7 +1,8 @@
-from typing import Any, Dict, Tuple, Union, Optional, List, Callable, Mapping, Sequence
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Dict, Tuple, Union, Optional, List, Callable, Mapping
 import numpy as np
 import transforms3d as tr3d
-import torch
 import copy
 from dataclasses import dataclass
 
@@ -9,7 +10,10 @@ from unienv_interface.backends.numpy import NumpyComputeBackend, NumpyArrayType,
 from unienv_interface.space import BoxSpace, DictSpace, BinarySpace
 from unienv_interface.env_base import Env
 
-from droid.robot_env import RobotEnv
+if TYPE_CHECKING:
+    # Only needed for annotations: importing ``droid`` pulls in the camera
+    # stack, which is not needed to wrap a compatible stand-in.
+    from droid.robot_env import RobotEnv
 
 def extrinsic_from_pose(
     pose : np.ndarray
@@ -66,27 +70,34 @@ def get_extrinsics_for_180_rotated_image(
     new_extrinsics[1, :] = -new_extrinsics[1, :]
     return new_extrinsics
 
-def _map_transform_to_array(data):
-    if isinstance(data, Mapping):
-        ret = {}
-        for key, value in data.items():
-            ret[key] = _map_transform_to_array(value)
-        return ret
-    elif isinstance(data, Sequence) and not isinstance(data, str):
-        ret_array = np.asarray(data)
-        if ret_array.dtype == np.float64:
-            ret_array = ret_array.astype(np.float32)
-        return ret_array
-    elif isinstance(data, int):
-        return np.array(data, dtype=np.int32)
-    elif isinstance(data, float):
-        return np.array(data, dtype=np.float32)
-    elif isinstance(data, bool):
-        return np.array(data, dtype=np.bool_)
-    else:
-        return data
+@dataclass(frozen=True)
+class DroidCamera:
+    """One camera stream exposed by :class:`DroidEnv`.
 
-__all__ = ['DroidEnv']
+    Attributes:
+        name: Observation name; the stream is emitted under ``cam_<name>``.
+            The bare camera serial for a mono (or left stereo) stream, and
+            ``<serial>_right`` for the right stream of a stereo camera.
+        source_key: Key of the stream in the upstream ``RobotEnv`` image /
+            depth / intrinsics dicts (e.g. ``"<serial>_left"``).
+        serial: Camera serial (the key of upstream ``camera_type``).
+        camera_type: Upstream camera type (``0`` = hand / wrist, otherwise
+            exterior).
+    """
+    name : str
+    source_key : str
+    serial : str
+    camera_type : int
+
+    @property
+    def is_ext(self) -> bool:
+        return self.camera_type != 0
+
+    @property
+    def is_right(self) -> bool:
+        return self.source_key.endswith("_right")
+
+__all__ = ['DroidEnv', 'DroidCamera']
 
 class DroidEnv(Env[
     NumpyArrayType,
@@ -145,7 +156,7 @@ class DroidEnv(Env[
                 dtype=np.float32,
                 shape=(7,)
             ),
-            "prev_joint_torques_applied_safened": BoxSpace(
+            "prev_joint_torques_computed_safened": BoxSpace(
                 NumpyComputeBackend,
                 low=-np.inf,
                 high=np.inf,
@@ -225,7 +236,27 @@ class DroidEnv(Env[
         use_6d_rotation_in_action : bool = False,
         use_tip_as_eef : bool = False,
         flip_ext_cams_y : Union[bool, Dict[str, bool]] = False,
+        include_right_images : bool = False,
     ):
+        """
+        Args:
+            robotenv: The upstream ``droid.robot_env.RobotEnv`` (or a compatible
+                stand-in exposing ``action_space``, ``reset``, ``step`` and
+                ``get_observation``).
+            use_6d_rotation_in_action: ``(10,)`` actions with a 6D rotation
+                (the first two rows of the rotation matrix) instead of ``(7,)``
+                actions with euler angles.
+            use_tip_as_eef: Report / actuate the EEF at the fingertip
+                (``TIP_EEF_OFFSET`` along tool-z) instead of the flange.
+            flip_ext_cams_y: Rotate camera outputs by 180 degrees. ``True``
+                flips every **exterior** camera (the wrist camera is never
+                flipped by the bool form); a mapping selects cameras by
+                observation name (``<serial>``) or upstream key
+                (``<serial>_left``).
+            include_right_images: Also expose the right stream of stereo
+                cameras, as ``cam_<serial>_right``. By default only the left
+                stream is exposed, as ``cam_<serial>``.
+        """
         if use_6d_rotation_in_action:
             self.action_space = BoxSpace(
                 NumpyComputeBackend,
@@ -245,33 +276,23 @@ class DroidEnv(Env[
         self.use_6d_rotation_in_action = use_6d_rotation_in_action
         self.use_tip_as_eef = use_tip_as_eef
         self.flip_ext_cams_y = flip_ext_cams_y
+        self.include_right_images = include_right_images
         self.robotenv = robotenv
 
         robotenv_obs = robotenv.get_observation()
-        self.all_cam_names = []
-        self.all_cam_is_ext = []
-        for serial, is_ext in robotenv_obs['camera_type'].items():
-            is_ext = is_ext != 0
-            if len(serial) == 0:
-                continue
-            if f"{serial}_left" in robotenv_obs['image']:
-                self.all_cam_names.append(f"{serial}_left")
-                self.all_cam_is_ext.append(is_ext)
-            if f"{serial}_right" in robotenv_obs['image']:
-                self.all_cam_names.append(f"{serial}_right")
-                self.all_cam_is_ext.append(is_ext)
-            if serial in robotenv_obs['image']:
-                self.all_cam_names.append(serial)
-                self.all_cam_is_ext.append(is_ext)
-        
-        def _get_cam_size(cam_name):
-            return tuple(robotenv_obs['image'][cam_name].shape[:2])
-        
+        self.cameras : List[DroidCamera] = self.discover_cameras(
+            robotenv_obs,
+            include_right_images=include_right_images
+        )
+        # Kept for backwards compatibility: observation names and exterior flags.
+        self.all_cam_names = [cam.name for cam in self.cameras]
+        self.all_cam_is_ext = [cam.is_ext for cam in self.cameras]
+
         self.observation_space = copy.copy(self.ROBOT_STATE_OBSERVATION_SPACE)
         self.observation_space.spaces.update(self.ADDITIONAL_STATE_OBSERVATION_SPACE.spaces)
-        for cam_name, is_ext in zip(self.all_cam_names, self.all_cam_is_ext):
-            cam_size = _get_cam_size(cam_name)
-            self.observation_space['cam_' + cam_name] = DictSpace(
+        for cam in self.cameras:
+            cam_size = tuple(robotenv_obs['image'][cam.source_key].shape[:2])
+            self.observation_space['cam_' + cam.name] = DictSpace(
                 NumpyComputeBackend,
                 {
                     "rgb": BoxSpace(
@@ -308,20 +329,66 @@ class DroidEnv(Env[
         self.rng = np.random.default_rng()
         self._render_frame = None
 
+    @staticmethod
+    def discover_cameras(
+        robotenv_obs : Dict[str, Any],
+        include_right_images : bool = False,
+    ) -> List[DroidCamera]:
+        """
+        List the camera streams of an upstream observation.
+
+        Real ZED cameras report ``<serial>_left`` / ``<serial>_right`` streams,
+        mono cameras (e.g. a simulator) report ``<serial>``. Every stream is
+        named after its camera serial so the observation key is ``cam_<serial>``
+        on both, with ``cam_<serial>_right`` for an included right stream.
+        """
+        cameras = []
+        for serial, camera_type in robotenv_obs['camera_type'].items():
+            if len(serial) == 0:
+                continue
+            camera_type = int(camera_type)
+            if serial in robotenv_obs['image']:
+                cameras.append(DroidCamera(serial, serial, serial, camera_type))
+            elif f"{serial}_left" in robotenv_obs['image']:
+                cameras.append(DroidCamera(serial, f"{serial}_left", serial, camera_type))
+            if include_right_images and f"{serial}_right" in robotenv_obs['image']:
+                cameras.append(DroidCamera(f"{serial}_right", f"{serial}_right", serial, camera_type))
+        return cameras
+
+    @property
+    def camera_serials(self) -> Tuple[str, ...]:
+        """Observation names of the exposed cameras (``cam_<name>`` keys)."""
+        return tuple(cam.name for cam in self.cameras)
+
+    @property
+    def camera_types(self) -> Dict[str, int]:
+        """``{camera name: camera_type}`` (``0`` = wrist, ``1`` = exterior)."""
+        return {cam.name: cam.camera_type for cam in self.cameras}
+
+    def _should_flip(self, cam : DroidCamera) -> bool:
+        if isinstance(self.flip_ext_cams_y, Mapping):
+            return bool(
+                self.flip_ext_cams_y.get(cam.name, self.flip_ext_cams_y.get(cam.source_key, False))
+            )
+        return bool(self.flip_ext_cams_y) and cam.is_ext
+
     def extract_obs(
         self,
         robotenv_obs : Dict[str, Any]
     ):
-        ret = _map_transform_to_array(robotenv_obs['robot_state'])
-        
-        
+        robot_state = robotenv_obs['robot_state']
+        ret = {
+            key: np.asarray(robot_state[key], dtype=space.dtype)
+            for key, space in self.ROBOT_STATE_OBSERVATION_SPACE.spaces.items()
+        }
+
         eef_euler = ret['cartesian_position'][3:]
         eef_quaternion = tr3d.euler.euler2quat(*eef_euler)
         eef_rotation_matrix = tr3d.quaternions.quat2mat(eef_quaternion)
-        
+
         ret['end_effector_euler'] = eef_euler
-        ret['end_effector_quaternion'] = eef_quaternion
-        ret['end_effector_6d_rotation'] = eef_rotation_matrix[:2, :].flatten()
+        ret['end_effector_quaternion'] = np.asarray(eef_quaternion, dtype=np.float32)
+        ret['end_effector_6d_rotation'] = np.asarray(eef_rotation_matrix[:2, :].flatten(), dtype=np.float32)
 
         eef_pos = ret['cartesian_position'][:3]
         if self.use_tip_as_eef:
@@ -329,22 +396,21 @@ class DroidEnv(Env[
                 eef_pos,
                 eef_rotation_matrix
             )
+        eef_pos = np.asarray(eef_pos, dtype=np.float32)
         ret['end_effector_pos'] = eef_pos
-        ret['cartesian_position'] = np.concatenate([eef_pos, eef_euler])
+        ret['cartesian_position'] = np.concatenate([eef_pos, eef_euler]).astype(np.float32)
 
-        for cam_name, is_ext in zip(self.all_cam_names, self.all_cam_is_ext):
-            serial = cam_name.split('_')[0]
-            rgb : np.ndarray = robotenv_obs['image'][cam_name]
+        intrinsics = extrinsics = None
+        for cam in self.cameras:
+            rgb : np.ndarray = robotenv_obs['image'][cam.source_key]
             rgb = rgb[..., [2,1,0]].astype(np.uint8) # For ZED we get BGRA images, convert to RGB and drop alpha if present
-            depth : np.ndarray = robotenv_obs['depth'][cam_name]
+            depth : np.ndarray = robotenv_obs['depth'][cam.source_key]
             depth = depth.astype(np.float32)
-            intrinsics = np.asarray(robotenv_obs['camera_intrinsics'][cam_name], dtype=np.float32)
-            extrinsics = np.asarray(robotenv_obs['camera_extrinsics'][cam_name], dtype=np.float32) if cam_name in robotenv_obs['camera_extrinsics'] else np.asarray(robotenv_obs['camera_extrinsics'][serial], dtype=np.float32)
-            extrinsics = extrinsic_from_pose(extrinsics)
-            if (
-                (isinstance(self.flip_ext_cams_y, bool) and self.flip_ext_cams_y) or 
-                (isinstance(self.flip_ext_cams_y, Mapping) and self.flip_ext_cams_y.get(cam_name, False))
-            ):
+            intrinsics = np.asarray(robotenv_obs['camera_intrinsics'][cam.source_key], dtype=np.float32)
+            camera_extrinsics = robotenv_obs['camera_extrinsics']
+            camera_pose = camera_extrinsics[cam.source_key] if cam.source_key in camera_extrinsics else camera_extrinsics[cam.serial]
+            extrinsics = extrinsic_from_pose(np.asarray(camera_pose, dtype=np.float64))
+            if self._should_flip(cam):
                 rgb = rgb[::-1, ::-1]
                 depth = depth[::-1, ::-1]
                 intrinsics = get_intrinsics_for_180_rotated_image(
@@ -355,14 +421,21 @@ class DroidEnv(Env[
                 extrinsics = get_extrinsics_for_180_rotated_image(
                     extrinsics
                 )
-            ret['cam_' + serial] = {
-                "rgb": rgb.astype(np.uint8),
-                "depth": depth.astype(np.float32),
+            intrinsics = intrinsics.astype(np.float32)
+            extrinsics = extrinsics.astype(np.float32)
+            ret['cam_' + cam.name] = {
+                "rgb": np.ascontiguousarray(rgb, dtype=np.uint8),
+                "depth": np.ascontiguousarray(depth, dtype=np.float32),
                 "intrinsics": intrinsics,
                 "extrinsics": extrinsics
             }
 
         return ret, intrinsics, extrinsics
+
+    def _update_render_frame(self, obs : Dict[str, Any]) -> None:
+        self._render_frame = [
+            obs['cam_' + cam.name]['rgb'] for cam in self.cameras if not cam.is_right
+        ]
 
     def reset(
         self,
@@ -375,14 +448,15 @@ class DroidEnv(Env[
         self.robotenv.reset()
         robotenv_obs = self.robotenv.get_observation()
         obs, intrinsics, extrinsics = self.extract_obs(robotenv_obs)
-        
-        self._render_frame = [obs['cam_' + cam_name]['rgb'] for cam_name in self.all_cam_names if not cam_name.endswith('right')]
+
+        self._update_render_frame(obs)
         return None, obs, {
             'intrinsics': intrinsics,
             'extrinsics': extrinsics
         }
 
     def step(self, action : np.ndarray):
+        action = np.asarray(action, dtype=np.float32)
         if self.use_6d_rotation_in_action:
             action_euler = self.rotation_6d_to_euler(action[3:9])
             if self.robotenv.action_space == 'cartesian_velocity':
@@ -391,7 +465,7 @@ class DroidEnv(Env[
         else:
             action_euler = action[3:6]
             action_gripper = action[6:]
-        
+
         action_pos = action[:3]
         action = np.concatenate([
             action_pos,
@@ -405,8 +479,8 @@ class DroidEnv(Env[
         self.robotenv.step(action)
         robotenv_obs = self.robotenv.get_observation()
         obs, intrinsics, extrinsics = self.extract_obs(robotenv_obs)
-        
-        self._render_frame = [obs['cam_' + cam_name]['rgb'] for cam_name in self.all_cam_names if not cam_name.endswith('right')]
+
+        self._update_render_frame(obs)
         return obs, 0, False, False, {}
 
     def render(self):
@@ -416,6 +490,10 @@ class DroidEnv(Env[
     def rotation_6d_to_euler(
         rotation_6d: np.ndarray
     ) -> np.ndarray:
+        # float64 throughout: transforms3d's ``mat2euler`` calls
+        # ``np.array(..., copy=False)``, which NumPy 2 rejects when a dtype
+        # conversion (e.g. from float32) would be needed.
+        rotation_6d = np.asarray(rotation_6d, dtype=np.float64)
         vec1 = rotation_6d[:3]
         vec2 = rotation_6d[3:]
         vec1 = vec1 / np.linalg.norm(vec1)
@@ -424,7 +502,7 @@ class DroidEnv(Env[
         vec3 = np.cross(vec1, vec2)
         rotation_matrix = np.stack([vec1, vec2, vec3], axis=0)
         return np.asarray(tr3d.euler.mat2euler(rotation_matrix), dtype=np.float32)
-    
+
     # Distance (m) from the FR3 flange origin to the gripper fingertip along
     # the tool (+z) axis. 0.159 m matches the mujoco_menagerie
     # franka_fr3_robotiq_2f85 CAD model (g_base -> fingertip), so sim and real
