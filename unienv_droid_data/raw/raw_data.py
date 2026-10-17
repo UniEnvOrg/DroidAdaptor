@@ -112,8 +112,8 @@ def _get_intrinsics_space(source : str) -> BoxSpace:
 def _get_camera_pose_space(source : str) -> BoxSpace:
     # DROID's camera "extrinsics" are the calibrated camera pose in the robot
     # base frame (camera -> base): position (m) + extrinsic-XYZ euler (rad).
-    # ``unienv_droid.env_wrapper.extrinsic_from_pose`` turns one into the
-    # (3, 4) base -> camera matrix ``DroidEnv`` reports.
+    # ``unienv_droid.conventions.extrinsics_from_camera_pose`` turns one into
+    # the (3, 4) base -> camera matrix ``DroidEnv`` reports.
     return NumpyBox(
         low=-np.inf, high=np.inf, dtype=np.float32, shape=(6,),
         metadata=space_metadata(
@@ -164,6 +164,21 @@ def _get_frame_space(
     camera_intrinsics = _camera_intrinsics_spaces("left")
     if read_right:
         camera_intrinsics.update(_camera_intrinsics_spaces("right"))
+    # The ``*_is_postcalibrated`` flags say whether the left exterior pose comes
+    # from the calibration annotations instead of the recording; right poses
+    # always come from the recording.
+    camera_extrinsics = {
+        "wrist_camera_left": _get_camera_pose_space("wrist"),
+        "exterior_camera_1_left": _get_camera_pose_space("exterior_1"),
+        "exterior_camera_1_is_postcalibrated": NumpyBinarySpace(shape=()),
+        "exterior_camera_2_left": _get_camera_pose_space("exterior_2"),
+        "exterior_camera_2_is_postcalibrated": NumpyBinarySpace(shape=()),
+    }
+    if read_right:
+        camera_extrinsics.update({
+            f"{camera_key}_right": _get_camera_pose_space(_camera_source(position, "right"))
+            for position, (_, _, camera_key) in _CAMERA_SOURCES.items()
+        })
     ret_space = NumpyDict(
         {
             "steps": NumpyDict({
@@ -226,19 +241,25 @@ def _get_frame_space(
                         low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,),
                         metadata=proprio_metadata(units="N*m", names=joint_names)
                     ),
+                    "prev_joint_torques_computed": NumpyBox(
+                        low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,),
+                        metadata=proprio_metadata(units="N*m", names=joint_names)
+                    ),
+                    "prev_joint_torques_computed_safened": NumpyBox(
+                        low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,),
+                        metadata=proprio_metadata(units="N*m", names=joint_names)
+                    ),
+                    "prev_controller_latency_ms": NumpyBox(
+                        low=0.0, high=np.inf, dtype=np.float32, shape=(),
+                        metadata=space_metadata("state", units="ms")
+                    ),
+                    "prev_command_successful": NumpyBinarySpace(shape=(), metadata=space_metadata("state")),
                     # Camera Observations
                     **_camera_spaces(height, width, "left"),
                     **(_camera_spaces(height, width, "right") if read_right else {}),
                     # Camera Parameters
                     "camera_intrinsics": NumpyDict(camera_intrinsics),
-                    # No extrinsics for right cameras!
-                    "camera_extrinsics": NumpyDict({
-                        "wrist_camera_left": _get_camera_pose_space("wrist"),
-                        "exterior_camera_1_left": _get_camera_pose_space("exterior_1"),
-                        "exterior_camera_1_is_postcalibrated": NumpyBinarySpace(shape=()),
-                        "exterior_camera_2_left": _get_camera_pose_space("exterior_2"),
-                        "exterior_camera_2_is_postcalibrated": NumpyBinarySpace(shape=()),
-                    }),
+                    "camera_extrinsics": NumpyDict(camera_extrinsics),
                 }),
                 "language_instruction_1": TextSpace(NumpyComputeBackend, max_length=512, metadata=space_metadata("task", label="language instruction")),
                 "language_instruction_2": TextSpace(NumpyComputeBackend, max_length=512, metadata=space_metadata("task", label="language instruction")),
@@ -252,8 +273,13 @@ def _get_frame_space(
     return ret_space
 
 def _get_metadata_space() -> DictSpace:
+    """Per-frame metadata: the episode directory and its camera serials (by DROID camera position)."""
     return NumpyDict({
-        "file_path": TextSpace(NumpyComputeBackend, max_length=1024)
+        "file_path": TextSpace(NumpyComputeBackend, max_length=1024),
+        "camera_serials": NumpyDict({
+            position: TextSpace(NumpyComputeBackend, max_length=64, metadata=space_metadata("state", label=f"{position} camera serial"))
+            for position in _CAMERA_SOURCES
+        }),
     })
 
 class RawDroidDataset(BatchBase[Dict[str, Any], NumpyArrayType, NumpyDeviceType, NumpyDtypeType, NumpyRNGType]):
@@ -398,6 +424,16 @@ class RawDroidDataset(BatchBase[Dict[str, Any], NumpyArrayType, NumpyDeviceType,
             "exterior_camera_2_left": exterior_camera_2_extrinsics_left,
             "exterior_camera_2_is_postcalibrated": exterior_camera_2_is_postcalibrated,
         }
+        if self.read_right:
+            h5_extrinsics = h5_file['observation']['camera_extrinsics']
+            for camera_key, serial in (
+                ("wrist_camera", metadata.wrist_cam_serial),
+                ("exterior_camera_1", metadata.ext1_cam_serial),
+                ("exterior_camera_2", metadata.ext2_cam_serial),
+            ):
+                camera_observation['camera_extrinsics'][f"{camera_key}_right"] = np.asarray(
+                    h5_extrinsics[f"{serial}_right"][index], dtype=np.float32
+                )
 
         frames = {
             "steps": {}
@@ -417,6 +453,10 @@ class RawDroidDataset(BatchBase[Dict[str, Any], NumpyArrayType, NumpyDeviceType,
             'joint_torques_computed': np.asarray(h5_file['observation']['robot_state']['joint_torques_computed'][index], dtype=np.float32),
             'joint_velocities': np.asarray(h5_file['observation']['robot_state']['joint_velocities'][index], dtype=np.float32),
             'motor_torques_measured': np.asarray(h5_file['observation']['robot_state']['motor_torques_measured'][index], dtype=np.float32),
+            'prev_joint_torques_computed': np.asarray(h5_file['observation']['robot_state']['prev_joint_torques_computed'][index], dtype=np.float32),
+            'prev_joint_torques_computed_safened': np.asarray(h5_file['observation']['robot_state']['prev_joint_torques_computed_safened'][index], dtype=np.float32),
+            'prev_controller_latency_ms': np.asarray(h5_file['observation']['robot_state']['prev_controller_latency_ms'][index], dtype=np.float32),
+            'prev_command_successful': np.asarray(h5_file['observation']['robot_state']['prev_command_successful'][index], dtype=bool),
             **camera_observation
         }
         frames['steps']['is_first'] = index == 0
@@ -428,8 +468,17 @@ class RawDroidDataset(BatchBase[Dict[str, Any], NumpyArrayType, NumpyDeviceType,
         frames['steps']['language_instruction_3'] = np.array([episode_language_ann['language_instruction_3']]*batch_size, dtype=object)
         frames['steps']['language_instruction_is_post_annotated'] = np.full((batch_size, ), episode_language_ann['language_instruction_is_post_annotated'], dtype=bool)
 
+        serials = {
+            "wrist": metadata.wrist_cam_serial,
+            "exterior_1": metadata.ext1_cam_serial,
+            "exterior_2": metadata.ext2_cam_serial,
+        }
         metadata = {
-            "file_path": np.array([str(episode_dir)]*batch_size, dtype=object)
+            "file_path": np.array([str(episode_dir)]*batch_size, dtype=object),
+            "camera_serials": {
+                position: np.array([str(serial)]*batch_size, dtype=object)
+                for position, serial in serials.items()
+            },
         }
 
         return frames, metadata

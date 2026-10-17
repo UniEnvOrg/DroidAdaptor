@@ -89,6 +89,8 @@ def svo_convert(
     initial_parameters.depth_minimum_distance = 0
     initial_parameters.depth_maximum_distance = 3
     initial_parameters.depth_mode = depth_mode
+    # The right depth map (``MEASURE.DEPTH_RIGHT``) is empty unless enabled here.
+    initial_parameters.enable_right_side_measure = read_right
     initial_parameters.sdk_verbose = 0
 
     zed = sl.Camera()
@@ -188,8 +190,10 @@ def svo_convert(
         frame_index += 1
 
     zed.close()
-    svo_depth_left = np.nan_to_num(svo_depth_left, nan=0.0, copy=False)
-    svo_depth_right = np.nan_to_num(svo_depth_right, nan=0.0, copy=False) if svo_depth_right is not None else None
+    # ZED marks invalid depth as NaN (occluded), +inf (too far) and -inf (too
+    # close); all become 0 (nan_to_num would otherwise map +-inf to +-FLT_MAX).
+    svo_depth_left = np.nan_to_num(svo_depth_left, nan=0.0, posinf=0.0, neginf=0.0, copy=False)
+    svo_depth_right = np.nan_to_num(svo_depth_right, nan=0.0, posinf=0.0, neginf=0.0, copy=False) if svo_depth_right is not None else None
     return svo_rgb_left, svo_depth_left, scaled_left_intrinsics, svo_rgb_right, svo_depth_right, scaled_right_intrinsics
 
 def read_camera_SVO(

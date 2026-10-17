@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 ## 0.0.1a5 (unreleased)
 
+- **Breaking — nested `DroidEnv` observation** (no compatibility layer):
+  `obs["robot"]["arm"]` (`joint_position`, `joint_velocity`, `joint_torque`,
+  `joint_motor_torque`, `eef_position`, `eef_quaternion`, and the controller
+  feedback `prev_joint_torques_computed(_safened)`,
+  `prev_controller_latency_ms`, `prev_command_successful`) and
+  `obs["robot"]["gripper"]["position"]` (`(1,)`), plus one entry per camera.
+  - Removed as redundant: `cartesian_position`, `end_effector_pos`,
+    `end_effector_euler`, `end_effector_quaternion` (now
+    `robot.arm.eef_quaternion`, `(w, x, y, z)` with `w >= 0`) and
+    `end_effector_6d_rotation`.
+  - Torques: `joint_torque` is the measured torque (upstream
+    `motor_torques_measured`), `joint_motor_torque` the commanded one
+    (upstream `joint_torques_computed`).
+  - Cameras are keyed by role, not serial: `hand_cam` (wrist),
+    `external_cam_0`, `external_cam_1`, ... (exterior, sorted-serial order),
+    `<name>_right` for right streams; the new `camera_names={serial: name}`
+    option overrides the names. `source` metadata is the camera name and the
+    serial is the `serial_number` metadata key. `flip_ext_cams_y` mappings take
+    camera names or serials.
+  - Removed: the `cam_<serial>` keys, `camera_types`, `all_cam_names`,
+    `all_cam_is_ext`, `ROBOT_STATE_OBSERVATION_SPACE`,
+    `ADDITIONAL_STATE_OBSERVATION_SPACE`, `extrinsic_from_pose` and
+    `transform_droid_eef_location_to_tip`. `camera_serials` is now
+    `{camera name: serial}`; `camera_names` lists the camera streams.
+  - `reset()` returns an empty `info` (it repeated the last camera's
+    intrinsics / extrinsics).
+- `unienv_droid.conventions` holds the schema: leaf metadata
+  (`ARM_OBSERVATION_METADATA`, `GRIPPER_OBSERVATION_METADATA`,
+  `camera_leaf_metadata`), space builders (`robot_observation_space`,
+  `camera_observation_space`), camera naming (`default_camera_names`) and the
+  vectorized conversions (`robot_observation`, `euler_to_quaternion`,
+  `canonical_quaternion`, `extrinsics_from_camera_pose`, `TIP_EEF_OFFSET`).
+- **`unienv_droid_data.transformations`**: `DroidRawToEnvTransformation`
+  turns `RawDroidDataset` frames into the `DroidEnv` observation schema
+  (`steps.observation` only; `use_tip_as_eef`, `camera_names` by DROID
+  position) and `DroidRawToEnvMetadataTransformation` keys the per-frame camera
+  serials by camera name; use them with `unienv_data`'s `TransformedBatch`.
+- `RawDroidDataset` reads the full robot state
+  (`prev_joint_torques_computed(_safened)`, `prev_controller_latency_ms`,
+  `prev_command_successful`), the right streams' camera poses with
+  `read_right=True` (`camera_extrinsics.<camera>_right`), and reports the
+  episode's camera serials in its per-frame metadata (`camera_serials.wrist`
+  / `exterior_1` / `exterior_2`).
 - `RawDroidDataset` spaces carry unienv space metadata too: actions
   (`eef_pose` / `eef_velocity` / `gripper` / `joint_position` /
   `joint_velocity`), robot state (described like `DroidEnv`'s), images (RGB
@@ -24,6 +67,13 @@ All notable changes to this project will be documented in this file.
   `RobotEnv` returns; upstream DROID's ZED reader leaves the SDK default
   (millimetres), so depth is divided by 1000 by default. Pass
   `depth_units="m"` if your camera stack already returns metres.
+- Fixed `RawDroidDataset(read_right=True)` depth: the right depth maps were
+  empty (`svo_convert` raised `ValueError: could not broadcast input array
+  from shape (0,0)`), since ZED computes `MEASURE.DEPTH_RIGHT` only with
+  `enable_right_side_measure`, which `svo_convert` now sets with `read_right`.
+- Fixed invalid ZED depth values: `svo_convert` mapped NaN to 0 but left
+  `+inf` (too far) / `-inf` (too close) as `+-3.4e38` (`np.nan_to_num`'s
+  default), outside the `[0, inf)` depth space; all invalid depth is now 0.
 - Fixed `RawDroidDataset(read_right=True)`, which raised `AttributeError`
   (`DictSpace` has no `update`) while building its space.
 - Fixed the `svo_convert` docstring: depth is `float32` metres (the SVO is

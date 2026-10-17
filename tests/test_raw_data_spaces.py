@@ -73,9 +73,34 @@ def test_action_and_observation_metadata():
     assert actions["cartesian_velocity"].metadata["normalized"] is True
     assert actions["gripper_position"].metadata["control"] == "gripper"
     obs = space["steps"]["observation"]
-    # The robot-state pose is described exactly like DroidEnv's.
-    from unienv_droid import DroidEnv
+    from unienv_droid import conventions
 
-    assert obs["cartesian_position"].metadata == DroidEnv.ROBOT_STATE_OBSERVATION_SPACE["cartesian_position"].metadata
-    assert obs["joint_velocities"].metadata == DroidEnv.ROBOT_STATE_OBSERVATION_SPACE["joint_velocities"].metadata
-    assert obs["gripper_position"].metadata == DroidEnv.ROBOT_STATE_OBSERVATION_SPACE["gripper_position"].metadata
+    assert obs["cartesian_position"].metadata == conventions.cartesian_position_metadata()
+    assert obs["joint_velocities"].metadata["units"] == "rad/s"
+    assert obs["gripper_position"].metadata["units"] == "normalized"
+
+
+def test_full_robot_state_is_read():
+    obs = _get_frame_space(H, W)["steps"]["observation"]
+    for key in (
+        "prev_joint_torques_computed", "prev_joint_torques_computed_safened",
+        "prev_controller_latency_ms", "prev_command_successful",
+    ):
+        assert key in obs.spaces, key
+    assert obs["prev_controller_latency_ms"].metadata["units"] == "ms"
+
+
+@pytest.mark.parametrize("read_right", [False, True])
+def test_right_stream_extrinsics(read_right):
+    extrinsics = _get_frame_space(H, W, read_right=read_right)["steps"]["observation"]["camera_extrinsics"]
+    for camera in ("wrist_camera", "exterior_camera_1", "exterior_camera_2"):
+        assert (f"{camera}_right" in extrinsics.spaces) == read_right
+    if read_right:
+        assert extrinsics["exterior_camera_1_right"].metadata["source"] == "exterior_1_right"
+
+
+def test_metadata_space_has_camera_serials():
+    from unienv_droid_data.raw.raw_data import _get_metadata_space
+
+    space = _get_metadata_space()
+    assert set(space["camera_serials"].spaces) == {"wrist", "exterior_1", "exterior_2"}
