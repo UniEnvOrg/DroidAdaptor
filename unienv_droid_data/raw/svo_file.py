@@ -1,4 +1,4 @@
-# There is some warning with converting the depth to uint16, but this is a valid thing to do (DROID does it).
+# Silence the ZED SDK / OpenCV warnings emitted while decoding recordings.
 import warnings
 warnings.filterwarnings("ignore")
 import time
@@ -59,21 +59,24 @@ def svo_convert(
     read_right = False
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Converts a .svo file to cropped and resized RGB and depth numpy arrays, with scaled intrinsics.
+    Converts a .svo / .svo2 file to resized RGB and depth numpy arrays, with scaled intrinsics.
     Extracts only the frames within the given slice.
     
     Parameters:
-        filepath: Path to the .svo file.
-        output_height: Desired output height of the images.
-        output_width: Desired output width of the images.
-        frame_range: An optional slice specifying the range of frames to extract (e.g., slice(0, 10)).
+        filepath: Path to the .svo / .svo2 file.
+        target_resolution: Output resolution (width, height) of the images and depth maps.
+        frame_range: An optional slice / index list of the frames to extract (e.g., slice(0, 10)).
                      If None, all frames are extracted.
+        depth_mode: ZED depth mode used to compute depth.
+        read_right: Also extract the right stream.
     
     Returns:
-        A tuple of (RGB, Depth, Intrinsics):
-            RGB: Array of shape (nframes, output_height, output_width, 3), dtype uint8.
-            Depth: Array of shape (nframes, output_height, output_width), dtype uint16.
-            Intrinsics: Array of shape (3, 3), dtype float.
+        A tuple of (RGB left, Depth left, Intrinsics left, RGB right, Depth right, Intrinsics right);
+        the right entries are ``None`` unless ``read_right``:
+            RGB: Array of shape (nframes, output_height, output_width, 3), dtype uint8, RGB channel order.
+            Depth: Array of shape (nframes, output_height, output_width), dtype float32, in metres
+                (the camera is opened with ``coordinate_units = METER``); NaN (invalid) pixels are 0.
+            Intrinsics: Array of shape (3, 3), dtype float32 (OpenCV camera matrix, scaled to the output resolution).
     """
 
     # Note: We'll use left camera images and intrinsics for the DROID dataset (this is how we are getting extrinsics)

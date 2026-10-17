@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## 0.0.1a5 (unreleased)
 
+- Fixed the `svo_convert` docstring: depth is `float32` metres (the SVO is
+  opened with `coordinate_units = METER`), not `uint16`.
 - Fixed the `DroidEnv` action bounds for a `cartesian_position` `RobotEnv`:
   the absolute euler angles are radians and are now bounded by `[-pi, pi]`
   (they were `[-1, 1]`), and the absolute gripper position by `[0, 1]`
