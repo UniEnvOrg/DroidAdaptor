@@ -135,7 +135,7 @@ def _get_frame_space(
         }
     )
     if read_right:
-        ret_space['steps']['observation'].update({
+        ret_space['steps']['observation'].spaces.update({
             "exterior_image_1_right": _get_rgb_image_space(height, width),
             "exterior_depth_1_right": _get_depth_image_space(height, width),
             "exterior_image_2_right": _get_rgb_image_space(height, width),
@@ -143,7 +143,7 @@ def _get_frame_space(
             "wrist_image_right": _get_rgb_image_space(height, width),
             "wrist_depth_right": _get_depth_image_space(height, width),
         })
-        ret_space['steps']['observation']['camera_intrinsics'].update({
+        ret_space['steps']['observation']['camera_intrinsics'].spaces.update({
             "wrist_camera_right": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),
             "exterior_camera_1_right": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),
             "exterior_camera_2_right": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),

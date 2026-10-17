@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## 0.0.1a5 (unreleased)
 
+- Fixed `RawDroidDataset(read_right=True)`, which raised `AttributeError`
+  (`DictSpace` has no `update`) while building its space.
 - Fixed the `svo_convert` docstring: depth is `float32` metres (the SVO is
   opened with `coordinate_units = METER`), not `uint16`.
 - Fixed the `DroidEnv` action bounds for a `cartesian_position` `RobotEnv`:
