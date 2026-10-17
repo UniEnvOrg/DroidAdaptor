@@ -4,6 +4,22 @@ import pickle
 import torch
 from unienv_interface.space import Space, DictSpace, BoxSpace, TextSpace, BinarySpace
 from unienv_interface.space.space_utils import batch_utils as sbu
+from unienv_interface.space.space_utils.metadata_utils import (
+    metadata as space_metadata,
+    action_metadata,
+    depth_metadata,
+    image_metadata,
+    proprio_metadata,
+)
+from unienv_droid.conventions import (
+    DROID_CONTROL_HZ,
+    FR3_JOINT_NAMES,
+    CARTESIAN_POSITION_NAMES,
+    CARTESIAN_POSITION_UNITS,
+    GRIPPER_LABEL,
+    camera_intrinsics_metadata,
+    cartesian_position_metadata,
+)
 from unienv_interface.backends.numpy import NumpyComputeBackend, NumpyArrayType, NumpyDeviceType, NumpyDtypeType, NumpyRNGType
 from unienv_data.base import BatchBase, IndexableType
 from functools import partial
@@ -35,35 +51,96 @@ _FR3_JNT_POSITION_LIMITS = np.array([
 # Actually if we want more accurate limits, we should use the limits from the hardware config file
 # https://github.com/droid-dataset/droid/blob/c5737e40a6b18859b5b78dbcdbf1e3b3f5e461be/config/fr3/franka_hardware.yaml#L43
 
-_FR3_JNT_POSITION_BOX = NumpyBox(
-    low=_FR3_JNT_POSITION_LIMITS[0],
-    high=_FR3_JNT_POSITION_LIMITS[1],
-    dtype=np.float32,
-    shape=(7,)
-)
+def _fr3_joint_position_box(metadata : Dict[str, Any]) -> BoxSpace:
+    """FR3 joint positions (rad) within the joint limits; action and proprio
+    leaves each get their own space so each carries its own metadata."""
+    return NumpyBox(
+        low=_FR3_JNT_POSITION_LIMITS[0],
+        high=_FR3_JNT_POSITION_LIMITS[1],
+        dtype=np.float32,
+        shape=(7,),
+        metadata=metadata
+    )
+
+# DROID raw recordings are captured at 15 Hz.
+_FPS = DROID_CONTROL_HZ
+
+# Camera ``source`` names: the dataset keys cameras by position, not serial.
+# A left stream is ``<position>`` and a right stream ``<position>_right``
+# (the ``DroidEnv`` naming).
+_CAMERA_SOURCES = {
+    "exterior_1": ("exterior_image_1", "exterior_depth_1", "exterior_camera_1"),
+    "exterior_2": ("exterior_image_2", "exterior_depth_2", "exterior_camera_2"),
+    "wrist": ("wrist_image", "wrist_depth", "wrist_camera"),
+}
+
+def _camera_source(position : str, side : str) -> str:
+    return position if side == "left" else f"{position}_right"
 
 def _get_rgb_image_space(
     height : int,
     width : int,
-    channels : int = 3
+    channels : int = 3,
+    source : Optional[str] = None,
 ) -> BoxSpace:
+    # ``svo_convert`` converts ZED BGRA to RGB.
     return NumpyBox(
         low=0,
         high=255,
         dtype=np.uint8,
-        shape=(height, width, channels)
+        shape=(height, width, channels),
+        metadata=image_metadata(format="rgb", layout="HWC", source=source, fps=_FPS)
     )
 
 def _get_depth_image_space(
     height : int,
     width : int,
+    source : Optional[str] = None,
 ) -> BoxSpace:
+    # ``svo_convert`` opens the SVO with ``coordinate_units = METER``.
     return NumpyBox(
         low=0,
         high=np.inf,
         dtype=np.float32,
-        shape=(height, width)
+        shape=(height, width),
+        metadata=depth_metadata(units="m", layout="HW", source=source, fps=_FPS)
     )
+
+def _get_intrinsics_space(source : str) -> BoxSpace:
+    return NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3), metadata=camera_intrinsics_metadata(source))
+
+def _get_camera_pose_space(source : str) -> BoxSpace:
+    # DROID's camera "extrinsics" are the calibrated camera pose in the robot
+    # base frame (camera -> base): position (m) + extrinsic-XYZ euler (rad).
+    # ``unienv_droid.env_wrapper.extrinsic_from_pose`` turns one into the
+    # (3, 4) base -> camera matrix ``DroidEnv`` reports.
+    return NumpyBox(
+        low=-np.inf, high=np.inf, dtype=np.float32, shape=(6,),
+        metadata=space_metadata(
+            "extrinsics",
+            source=source,
+            frame="base",
+            rotation="euler_sxyz",
+            units=list(CARTESIAN_POSITION_UNITS),
+            names=list(CARTESIAN_POSITION_NAMES),
+            label="camera pose in the robot base frame (camera -> base)",
+        )
+    )
+
+def _camera_spaces(height : int, width : int, side : str) -> Dict[str, BoxSpace]:
+    """Image and depth spaces of every camera stream of one side (``left`` / ``right``)."""
+    ret = {}
+    for position, (image_key, depth_key, _) in _CAMERA_SOURCES.items():
+        source = _camera_source(position, side)
+        ret[f"{image_key}_{side}"] = _get_rgb_image_space(height, width, source=source)
+        ret[f"{depth_key}_{side}"] = _get_depth_image_space(height, width, source=source)
+    return ret
+
+def _camera_intrinsics_spaces(side : str) -> Dict[str, BoxSpace]:
+    return {
+        f"{camera_key}_{side}": _get_intrinsics_space(_camera_source(position, side))
+        for position, (_, _, camera_key) in _CAMERA_SOURCES.items()
+    }
 
 def pad_images_to(
     images : np.ndarray,
@@ -83,72 +160,95 @@ def _get_frame_space(
     width : int,
     read_right : bool = False
 ):
+    joint_names = list(FR3_JOINT_NAMES)
+    camera_intrinsics = _camera_intrinsics_spaces("left")
+    if read_right:
+        camera_intrinsics.update(_camera_intrinsics_spaces("right"))
     ret_space = NumpyDict(
         {
             "steps": NumpyDict({
                 "action_dict": NumpyDict({
                     # cartesian_position is not normalized, its just that its impossible to exceed the limits of [-1, 1]
-                    "cartesian_position": NumpyBox(low=np.array([-1.0]*3 + [-np.pi]*3), high=np.array([1.0] * 3 + [np.pi] * 3), dtype=np.float32, shape=(6,)),
-                    "cartesian_velocity": NumpyBox(low=-1.0, high=1.0, dtype=np.float32, shape=(6,)),
+                    "cartesian_position": NumpyBox(
+                        low=np.array([-1.0]*3 + [-np.pi]*3), high=np.array([1.0] * 3 + [np.pi] * 3), dtype=np.float32, shape=(6,),
+                        metadata=action_metadata(
+                            control="eef_pose", mode="absolute", frame="base", rotation="euler_sxyz",
+                            units=list(CARTESIAN_POSITION_UNITS), names=list(CARTESIAN_POSITION_NAMES),
+                        )
+                    ),
+                    "cartesian_velocity": NumpyBox(
+                        low=-1.0, high=1.0, dtype=np.float32, shape=(6,),
+                        metadata=action_metadata(
+                            control="eef_velocity", mode="velocity", normalized=True, units="normalized",
+                            frame="base", rotation="euler_sxyz", names=list(CARTESIAN_POSITION_NAMES),
+                        )
+                    ),
                     # 0 when open, 1 when closed
-                    "gripper_position": NumpyBox(low=0.0, high=1.0, dtype=np.float32, shape=()),
-                    "gripper_velocity": NumpyBox(low=-1.0, high=1.0, dtype=np.float32, shape=()),
-                    "joint_position": _FR3_JNT_POSITION_BOX,
-                    "joint_velocity": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,)),
+                    "gripper_position": NumpyBox(
+                        low=0.0, high=1.0, dtype=np.float32, shape=(),
+                        metadata=action_metadata(control="gripper", mode="absolute", units="normalized", label=GRIPPER_LABEL)
+                    ),
+                    "gripper_velocity": NumpyBox(
+                        low=-1.0, high=1.0, dtype=np.float32, shape=(),
+                        metadata=action_metadata(control="gripper", mode="velocity", normalized=True, units="normalized")
+                    ),
+                    "joint_position": _fr3_joint_position_box(
+                        action_metadata(control="joint_position", mode="absolute", units="rad", names=joint_names)
+                    ),
+                    # Normalized joint velocity (joint delta / DROID's max joint delta per step).
+                    "joint_velocity": NumpyBox(
+                        low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,),
+                        metadata=action_metadata(
+                            control="joint_velocity", mode="velocity", normalized=True, units="normalized", names=joint_names,
+                        )
+                    ),
                 }),
                 "observation": NumpyDict({
                     # Robot States
-                    "cartesian_position": NumpyBox(low=np.array([-1.0]*3 + [-np.pi]*3), high=np.array([1.0] * 3 + [np.pi] * 3), dtype=np.float32, shape=(6,)),
-                    "gripper_position": NumpyBox(low=0.0, high=1.0, dtype=np.float32, shape=()),
-                    "joint_position": _FR3_JNT_POSITION_BOX,
-                    "joint_torques_computed": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,)),
-                    "joint_velocities": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,)),
-                    "motor_torques_measured": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,)),
+                    "cartesian_position": NumpyBox(
+                        low=np.array([-1.0]*3 + [-np.pi]*3), high=np.array([1.0] * 3 + [np.pi] * 3), dtype=np.float32, shape=(6,),
+                        metadata=cartesian_position_metadata()
+                    ),
+                    "gripper_position": NumpyBox(
+                        low=0.0, high=1.0, dtype=np.float32, shape=(),
+                        metadata=proprio_metadata(units="normalized", label=GRIPPER_LABEL)
+                    ),
+                    "joint_position": _fr3_joint_position_box(proprio_metadata(units="rad", names=joint_names)),
+                    "joint_torques_computed": NumpyBox(
+                        low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,),
+                        metadata=proprio_metadata(units="N*m", names=joint_names)
+                    ),
+                    "joint_velocities": NumpyBox(
+                        low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,),
+                        metadata=proprio_metadata(units="rad/s", names=joint_names)
+                    ),
+                    "motor_torques_measured": NumpyBox(
+                        low=-np.inf, high=np.inf, dtype=np.float32, shape=(7,),
+                        metadata=proprio_metadata(units="N*m", names=joint_names)
+                    ),
                     # Camera Observations
-                    "exterior_image_1_left": _get_rgb_image_space(height, width),
-                    "exterior_depth_1_left": _get_depth_image_space(height, width),
-                    "exterior_image_2_left": _get_rgb_image_space(height, width),
-                    "exterior_depth_2_left": _get_depth_image_space(height, width),
-                    "wrist_image_left": _get_rgb_image_space(height, width),
-                    "wrist_depth_left": _get_depth_image_space(height, width),
+                    **_camera_spaces(height, width, "left"),
+                    **(_camera_spaces(height, width, "right") if read_right else {}),
                     # Camera Parameters
-                    "camera_intrinsics": NumpyDict({
-                        "wrist_camera_left": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),
-                        "exterior_camera_1_left": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),
-                        "exterior_camera_2_left": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),
-                    }),
+                    "camera_intrinsics": NumpyDict(camera_intrinsics),
+                    # No extrinsics for right cameras!
                     "camera_extrinsics": NumpyDict({
-                        "wrist_camera_left": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(6,)),
-                        "exterior_camera_1_left": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(6,)),
+                        "wrist_camera_left": _get_camera_pose_space("wrist"),
+                        "exterior_camera_1_left": _get_camera_pose_space("exterior_1"),
                         "exterior_camera_1_is_postcalibrated": NumpyBinarySpace(shape=()),
-                        "exterior_camera_2_left": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(6,)),
+                        "exterior_camera_2_left": _get_camera_pose_space("exterior_2"),
                         "exterior_camera_2_is_postcalibrated": NumpyBinarySpace(shape=()),
                     }),
                 }),
-                "language_instruction_1": TextSpace(NumpyComputeBackend, max_length=512),
-                "language_instruction_2": TextSpace(NumpyComputeBackend, max_length=512),
-                "language_instruction_3": TextSpace(NumpyComputeBackend, max_length=512),
+                "language_instruction_1": TextSpace(NumpyComputeBackend, max_length=512, metadata=space_metadata("task", label="language instruction")),
+                "language_instruction_2": TextSpace(NumpyComputeBackend, max_length=512, metadata=space_metadata("task", label="language instruction")),
+                "language_instruction_3": TextSpace(NumpyComputeBackend, max_length=512, metadata=space_metadata("task", label="language instruction")),
                 "language_instruction_is_post_annotated": BinarySpace(NumpyComputeBackend, shape=()),
                 "is_first": NumpyBox(low=0, high=1, dtype=np.uint8, shape=()),
                 "is_last": NumpyBox(low=0, high=1, dtype=np.uint8, shape=()),
             })
         }
     )
-    if read_right:
-        ret_space['steps']['observation'].spaces.update({
-            "exterior_image_1_right": _get_rgb_image_space(height, width),
-            "exterior_depth_1_right": _get_depth_image_space(height, width),
-            "exterior_image_2_right": _get_rgb_image_space(height, width),
-            "exterior_depth_2_right": _get_depth_image_space(height, width),
-            "wrist_image_right": _get_rgb_image_space(height, width),
-            "wrist_depth_right": _get_depth_image_space(height, width),
-        })
-        ret_space['steps']['observation']['camera_intrinsics'].spaces.update({
-            "wrist_camera_right": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),
-            "exterior_camera_1_right": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),
-            "exterior_camera_2_right": NumpyBox(low=-np.inf, high=np.inf, dtype=np.float32, shape=(3, 3)),
-        })
-        # No extrinsics for right cameras!
     return ret_space
 
 def _get_metadata_space() -> DictSpace:

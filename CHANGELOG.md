@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 ## 0.0.1a5 (unreleased)
 
+- `RawDroidDataset` spaces carry unienv space metadata too: actions
+  (`eef_pose` / `eef_velocity` / `gripper` / `joint_position` /
+  `joint_velocity`), robot state (described like `DroidEnv`'s), images (RGB
+  `HWC`) and depth (metres), source = the positional camera name
+  (`exterior_1`, `exterior_2`, `wrist`, `<name>_right` for right streams), fps
+  15, intrinsics and the camera poses (`extrinsics`, base frame,
+  `euler_sxyz`). The action and observation `joint_position` leaves are now
+  separate spaces (previously one shared `_FR3_JNT_POSITION_BOX`).
 - Requires `unienv>=0.0.1b16`. `DroidEnv` observation and action spaces
   carry unienv space metadata: robot state (`proprio`, units, joint / element
   names, base frame, `euler_sxyz` / `quat_wxyz` / `rot6d`), cameras (`image`

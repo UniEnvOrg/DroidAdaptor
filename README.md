@@ -137,5 +137,14 @@ first_trajectory_data = dataset.get_trajectory_at(0)
 first_trajectory_data, first_trajectory_metadata = dataset.get_trajectory_at_with_metadata(0)
 ```
 
+`dataset.single_space` is described with unienv space metadata like
+`DroidEnv`'s: images are RGB `HWC`, depth is `float32` metres (the SVO
+recordings are opened with `coordinate_units = METER`), and the camera
+`source` is the positional name (`exterior_1`, `exterior_2`, `wrist`;
+`<name>_right` for right streams). `camera_extrinsics` are camera poses in the
+robot base frame (position + extrinsic-XYZ euler). This space metadata
+(`space.metadata`) is unrelated to `dataset.single_metadata_space`, the space of
+the per-sample record (episode `file_path`) returned by `get_at_with_metadata`.
+
 Note that for the resolution we picked the VGA resolution, instead you can pick any resolution supported by ZED. 
 See [Zed SDK Documentation](https://www.stereolabs.com/docs/api/group__Video__group.html#gabd0374c748530a64a72872c43b2cc828) for complete list of supported resolutions.
