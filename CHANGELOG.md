@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## 0.0.1a5 (unreleased)
 
+- Fixed the `DroidEnv` action bounds for a `cartesian_position` `RobotEnv`:
+  the absolute euler angles are radians and are now bounded by `[-pi, pi]`
+  (they were `[-1, 1]`), and the absolute gripper position by `[0, 1]`
+  (upstream clips it there). `cartesian_velocity` actions stay `[-1, 1]`.
+  `DroidEnv.action_bounds` / `build_action_space` expose the bounds, and a
+  `RobotEnv` with a joint action space now raises (`DroidEnv` only sends
+  cartesian actions).
 - Fixed `DroidEnv` on real stereo ZED rigs: the left stream (`<serial>_left`)
   is now exposed as `cam_<serial>`, and the observation space uses the same
   key. Previously the space declared `cam_<serial>_left` while observations

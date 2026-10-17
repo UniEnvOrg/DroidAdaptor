@@ -230,6 +230,49 @@ class DroidEnv(Env[
     batch_size = None
     context_space = None
     
+    SUPPORTED_ACTION_SPACES = ("cartesian_position", "cartesian_velocity")
+
+    @staticmethod
+    def action_bounds(
+        action_space : str,
+        use_6d_rotation_in_action : bool = False
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """``(low, high)`` of the action Box for an upstream ``action_space``.
+
+        ``cartesian_velocity`` actions are normalized velocities, which
+        upstream ``RobotEnv.step`` asserts to lie in ``[-1, 1]``.
+        ``cartesian_position`` actions are an absolute pose that upstream does
+        not normalize: position in metres (``[-1, 1]``, the bounds the DROID
+        dataset declares for ``cartesian_position``), euler angles in radians
+        (``[-pi, pi]``) or 6D rotation rows (``[-1, 1]``), and a gripper
+        position, which upstream clips to ``[0, 1]`` (``0`` open, ``1`` closed).
+        """
+        n_rot = 6 if use_6d_rotation_in_action else 3
+        if action_space == "cartesian_velocity":
+            low = np.full(3 + n_rot + 1, -1.0)
+            high = np.full(3 + n_rot + 1, 1.0)
+        else:
+            rot_bound = 1.0 if use_6d_rotation_in_action else np.pi
+            low = np.concatenate([[-1.0] * 3, [-rot_bound] * n_rot, [0.0]])
+            high = np.concatenate([[1.0] * 3, [rot_bound] * n_rot, [1.0]])
+        return low.astype(np.float32), high.astype(np.float32)
+
+    @classmethod
+    def build_action_space(
+        cls,
+        action_space : str,
+        use_6d_rotation_in_action : bool = False
+    ) -> BoxSpace:
+        """The action space for an upstream ``action_space`` (see :meth:`action_bounds`)."""
+        low, high = cls.action_bounds(action_space, use_6d_rotation_in_action)
+        return BoxSpace(
+            NumpyComputeBackend,
+            low,
+            high,
+            dtype=np.float32,
+            shape=low.shape
+        )
+
     def __init__(
         self,
         robotenv : RobotEnv,
@@ -257,22 +300,15 @@ class DroidEnv(Env[
                 cameras, as ``cam_<serial>_right``. By default only the left
                 stream is exposed, as ``cam_<serial>``.
         """
-        if use_6d_rotation_in_action:
-            self.action_space = BoxSpace(
-                NumpyComputeBackend,
-                -1.0,
-                1.0,
-                dtype=np.float32,
-                shape=(10,)
+        if robotenv.action_space not in self.SUPPORTED_ACTION_SPACES:
+            raise ValueError(
+                f"DroidEnv supports a RobotEnv with action_space in {self.SUPPORTED_ACTION_SPACES}, "
+                f"got {robotenv.action_space!r}"
             )
-        else:
-            self.action_space = BoxSpace(
-                NumpyComputeBackend,
-                -1.0,
-                1.0,
-                dtype=np.float32,
-                shape=(7,)
-            )
+        self.action_space = self.build_action_space(
+            robotenv.action_space,
+            use_6d_rotation_in_action
+        )
         self.use_6d_rotation_in_action = use_6d_rotation_in_action
         self.use_tip_as_eef = use_tip_as_eef
         self.flip_ext_cams_y = flip_ext_cams_y

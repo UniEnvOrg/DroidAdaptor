@@ -182,3 +182,39 @@ def test_discover_cameras_static():
     cams = DroidEnv.discover_cameras(MockRobotEnv().get_observation())
     assert cams[0] == DroidCamera(WRIST, f"{WRIST}_left", WRIST, 0)
     assert not cams[0].is_ext and cams[1].is_ext
+
+
+@pytest.mark.parametrize("use_6d", [False, True])
+def test_absolute_action_bounds_cover_radians(use_6d):
+    env = DroidEnv(MockRobotEnv("cartesian_position"), use_6d_rotation_in_action=use_6d)
+    low, high = env.action_space.low, env.action_space.high
+    np.testing.assert_array_equal(low[:3], -1.0)
+    np.testing.assert_array_equal(high[:3], 1.0)
+    if use_6d:
+        np.testing.assert_array_equal(low[3:9], -1.0)
+        np.testing.assert_array_equal(high[3:9], 1.0)
+    else:
+        # Absolute euler angles are radians, not normalized.
+        np.testing.assert_allclose(low[3:6], -np.pi, rtol=1e-6)
+        np.testing.assert_allclose(high[3:6], np.pi, rtol=1e-6)
+    # Upstream clips an absolute gripper command to [0, 1].
+    assert (low[-1], high[-1]) == (0.0, 1.0)
+
+    # A reachable absolute pose with |euler| > 1 rad lies in the space.
+    euler = np.array([np.pi - 0.1, 0.2, -2.5])
+    rotation = euler if not use_6d else tr3d.euler.euler2mat(*euler)[:2].reshape(-1)
+    action = np.concatenate([[0.4, 0.0, 0.2], rotation, [1.0]]).astype(np.float32)
+    assert env.action_space.contains(action)
+
+
+@pytest.mark.parametrize("use_6d", [False, True])
+def test_velocity_action_bounds_stay_normalized(use_6d):
+    env = DroidEnv(MockRobotEnv("cartesian_velocity"), use_6d_rotation_in_action=use_6d)
+    assert env.action_space.shape == ((10,) if use_6d else (7,))
+    np.testing.assert_array_equal(env.action_space.low, -1.0)
+    np.testing.assert_array_equal(env.action_space.high, 1.0)
+
+
+def test_unsupported_action_space_raises():
+    with pytest.raises(ValueError, match="action_space"):
+        DroidEnv(MockRobotEnv("joint_position"))
