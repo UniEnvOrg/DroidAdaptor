@@ -8,7 +8,24 @@ from dataclasses import dataclass
 
 from unienv_interface.backends.numpy import NumpyComputeBackend, NumpyArrayType, NumpyDeviceType, NumpyDtypeType, NumpyRNGType
 from unienv_interface.space import BoxSpace, DictSpace, BinarySpace
+from unienv_interface.space.space_utils.metadata_utils import (
+    metadata as space_metadata,
+    proprio_metadata,
+)
 from unienv_interface.env_base import Env
+
+from .conventions import (
+    DROID_CONTROL_HZ,
+    FR3_JOINT_NAMES,
+    EEF_POSITION_NAMES,
+    EULER_NAMES,
+    QUATERNION_NAMES,
+    ROTATION_6D_NAMES,
+    GRIPPER_LABEL,
+    cartesian_position_metadata,
+    cartesian_action_metadata,
+    camera_leaf_metadata,
+)
 
 if TYPE_CHECKING:
     # Only needed for annotations: importing ``droid`` pulls in the camera
@@ -119,67 +136,77 @@ class DroidEnv(Env[
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(6,)
+                shape=(6,),
+                metadata=cartesian_position_metadata(),
             ), # end-effector position (x, y, z) and orientation (roll, pitch, yaw)
             "gripper_position": BoxSpace(
                 NumpyComputeBackend,
                 low=0,
                 high=1,
                 dtype=np.float32,
-                shape=()
+                shape=(),
+                metadata=proprio_metadata(units="normalized", label=GRIPPER_LABEL),
             ),
             "joint_positions": BoxSpace(
                 NumpyComputeBackend,
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(7,)
+                shape=(7,),
+                metadata=proprio_metadata(units="rad", names=list(FR3_JOINT_NAMES)),
             ),
             "joint_velocities": BoxSpace(
                 NumpyComputeBackend,
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(7,)
+                shape=(7,),
+                metadata=proprio_metadata(units="rad/s", names=list(FR3_JOINT_NAMES)),
             ),
             "joint_torques_computed": BoxSpace(
                 NumpyComputeBackend,
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(7,)
+                shape=(7,),
+                metadata=proprio_metadata(units="N*m", names=list(FR3_JOINT_NAMES)),
             ),
             "prev_joint_torques_computed": BoxSpace(
                 NumpyComputeBackend,
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(7,)
+                shape=(7,),
+                metadata=proprio_metadata(units="N*m", names=list(FR3_JOINT_NAMES)),
             ),
             "prev_joint_torques_computed_safened": BoxSpace(
                 NumpyComputeBackend,
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(7,)
+                shape=(7,),
+                metadata=proprio_metadata(units="N*m", names=list(FR3_JOINT_NAMES)),
             ),
             "motor_torques_measured": BoxSpace(
                 NumpyComputeBackend,
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(7,)
+                shape=(7,),
+                metadata=proprio_metadata(units="N*m", names=list(FR3_JOINT_NAMES)),
             ),
             "prev_controller_latency_ms": BoxSpace(
                 NumpyComputeBackend,
                 low=0,
                 high=np.inf,
                 dtype=np.float32,
-                shape=()
+                shape=(),
+                metadata=space_metadata("state", units="ms"),
             ),
             "prev_command_successful": BinarySpace(
                 NumpyComputeBackend,
-                shape=()
+                shape=(),
+                metadata=space_metadata("state"),
             )
         }
     )
@@ -191,28 +218,32 @@ class DroidEnv(Env[
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(3,)
+                shape=(3,),
+                metadata=proprio_metadata(units="m", names=list(EEF_POSITION_NAMES), frame="base"),
             ), # end-effector position (x, y, z)
             "end_effector_euler": BoxSpace(
                 NumpyComputeBackend,
                 low=-np.inf,
                 high=np.inf,
                 dtype=np.float32,
-                shape=(3,)
+                shape=(3,),
+                metadata=proprio_metadata(units="rad", names=list(EULER_NAMES), frame="base", rotation="euler_sxyz"),
             ), # end-effector orientation (roll, pitch, yaw)
             "end_effector_quaternion": BoxSpace(
                 NumpyComputeBackend,
                 low=-1,
                 high=1,
                 dtype=np.float32,
-                shape=(4,)
+                shape=(4,),
+                metadata=proprio_metadata(units="normalized", names=list(QUATERNION_NAMES), frame="base", rotation="quat_wxyz"),
             ),
             "end_effector_6d_rotation": BoxSpace(
                 NumpyComputeBackend,
                 low=-1,
                 high=1,
                 dtype=np.float32,
-                shape=(6,)
+                shape=(6,),
+                metadata=proprio_metadata(units="normalized", names=list(ROTATION_6D_NAMES), frame="base", rotation="rot6d"),
             ),
         }
     )
@@ -222,7 +253,7 @@ class DroidEnv(Env[
     }
 
     render_mode = "rgb_array"
-    render_fps = 15
+    render_fps = DROID_CONTROL_HZ
 
     backend = NumpyComputeBackend
     device = None
@@ -266,14 +297,19 @@ class DroidEnv(Env[
         action_space : str,
         use_6d_rotation_in_action : bool = False
     ) -> BoxSpace:
-        """The action space for an upstream ``action_space`` (see :meth:`action_bounds`)."""
+        """The action space for an upstream ``action_space`` (see :meth:`action_bounds`).
+
+        Its metadata (``conventions.cartesian_action_metadata``) names every
+        element and gives the mode, units, frame and rotation representation.
+        """
         low, high = cls.action_bounds(action_space, use_6d_rotation_in_action)
         return BoxSpace(
             NumpyComputeBackend,
             low,
             high,
             dtype=np.float32,
-            shape=low.shape
+            shape=low.shape,
+            metadata=cartesian_action_metadata(action_space, use_6d_rotation_in_action)
         )
 
     def __init__(
@@ -345,6 +381,7 @@ class DroidEnv(Env[
         self.observation_space.spaces.update(self.ADDITIONAL_STATE_OBSERVATION_SPACE.spaces)
         for cam in self.cameras:
             cam_size = tuple(robotenv_obs['image'][cam.source_key].shape[:2])
+            cam_metadata = camera_leaf_metadata(cam.name, fps=self.render_fps)
             self.observation_space['cam_' + cam.name] = DictSpace(
                 NumpyComputeBackend,
                 {
@@ -353,28 +390,32 @@ class DroidEnv(Env[
                         0,
                         255,
                         dtype=np.uint8,
-                        shape=(*cam_size, 3)
+                        shape=(*cam_size, 3),
+                        metadata=cam_metadata["rgb"]
                     ),
                     "depth": BoxSpace(
                         NumpyComputeBackend,
                         0,
                         np.inf,
                         dtype=np.float32,
-                        shape=cam_size
+                        shape=cam_size,
+                        metadata=cam_metadata["depth"]
                     ),
                     "intrinsics": BoxSpace(
                         NumpyComputeBackend,
                         low=-np.inf,
                         high=np.inf,
                         dtype=np.float32,
-                        shape=(3, 3)
+                        shape=(3, 3),
+                        metadata=cam_metadata["intrinsics"]
                     ),
                     "extrinsics": BoxSpace(
                         NumpyComputeBackend,
                         low=-np.inf,
                         high=np.inf,
                         dtype=np.float32,
-                        shape=(3, 4)
+                        shape=(3, 4),
+                        metadata=cam_metadata["extrinsics"]
                     ),
                 }
             )

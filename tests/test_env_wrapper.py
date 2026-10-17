@@ -10,6 +10,8 @@ import numpy as np
 import pytest
 import transforms3d as tr3d
 
+from unienv_interface.space.space_utils.metadata_utils import find_spaces_by_metadata, validate_metadata
+
 from unienv_droid import DroidCamera, DroidEnv
 
 WRIST = "13062452"
@@ -255,3 +257,73 @@ def test_depth_conversion_follows_flip():
 def test_depth_units_rejects_unknown():
     with pytest.raises(ValueError, match="depth_units"):
         DroidEnv(MockRobotEnv(), depth_units="cm")
+
+
+@pytest.mark.parametrize("action_space", ["cartesian_position", "cartesian_velocity"])
+@pytest.mark.parametrize("use_6d", [False, True])
+@pytest.mark.parametrize("include_right", [False, True])
+def test_spaces_are_described(action_space, use_6d, include_right):
+    env = DroidEnv(
+        MockRobotEnv(action_space),
+        use_6d_rotation_in_action=use_6d,
+        include_right_images=include_right,
+    )
+    validate_metadata(env.observation_space)
+    validate_metadata(env.action_space)
+    # Every observation leaf is described.
+    for key, leaf in _space_leaves(env.observation_space):
+        assert "kind" in leaf.metadata, key
+
+
+def test_observation_metadata():
+    env = DroidEnv(MockRobotEnv(), include_right_images=True)
+    space = env.observation_space
+    md = space["cartesian_position"].metadata
+    assert md["kind"] == "proprio"
+    assert md["frame"] == "base" and md["rotation"] == "euler_sxyz"
+    assert list(md["units"]) == ["m", "m", "m", "rad", "rad", "rad"]
+    assert space["end_effector_quaternion"].metadata["rotation"] == "quat_wxyz"
+    assert space["end_effector_6d_rotation"].metadata["rotation"] == "rot6d"
+    assert space["joint_positions"].metadata["units"] == "rad"
+    assert space["joint_velocities"].metadata["units"] == "rad/s"
+    assert space["motor_torques_measured"].metadata["units"] == "N*m"
+    assert space["prev_controller_latency_ms"].metadata["units"] == "ms"
+    assert space["gripper_position"].metadata["units"] == "normalized"
+
+    for name in (WRIST, EXT1, f"{EXT1}_right"):
+        cam = space[f"cam_{name}"]
+        assert cam["rgb"].metadata == {
+            "kind": "image", "format": "rgb", "layout": "HWC", "source": name, "fps": 15,
+        }
+        assert cam["depth"].metadata == {
+            "kind": "depth", "units": "m", "layout": "HW", "source": name, "fps": 15,
+        }
+        assert cam["intrinsics"].metadata["kind"] == "intrinsics"
+        assert cam["extrinsics"].metadata["kind"] == "extrinsics"
+        assert cam["extrinsics"].metadata["frame"] == "camera_cv"
+    images = find_spaces_by_metadata(space, kind="image")
+    assert len(images) == 6
+
+
+def test_class_constant_metadata_is_not_mutated_per_instance():
+    before = DroidEnv.ROBOT_STATE_OBSERVATION_SPACE["cartesian_position"].metadata
+    DroidEnv(MockRobotEnv())
+    assert "cam_" + WRIST not in DroidEnv.ROBOT_STATE_OBSERVATION_SPACE.spaces
+    assert DroidEnv.ROBOT_STATE_OBSERVATION_SPACE["cartesian_position"].metadata == before
+
+
+@pytest.mark.parametrize("use_6d", [False, True])
+def test_action_metadata(use_6d):
+    absolute = DroidEnv(MockRobotEnv("cartesian_position"), use_6d_rotation_in_action=use_6d).action_space.metadata
+    velocity = DroidEnv(MockRobotEnv("cartesian_velocity"), use_6d_rotation_in_action=use_6d).action_space.metadata
+    n = 10 if use_6d else 7
+    assert absolute["kind"] == velocity["kind"] == "action"
+    assert (absolute["control"], absolute["mode"]) == ("eef_pose", "absolute")
+    assert (velocity["control"], velocity["mode"]) == ("eef_velocity", "velocity")
+    assert velocity["normalized"] is True and velocity["units"] == "normalized"
+    assert "normalized" not in absolute
+    assert absolute["frame"] == velocity["frame"] == "base"
+    assert absolute["rotation"] == ("rot6d" if use_6d else "euler_sxyz")
+    assert len(absolute["names"]) == len(absolute["units"]) == n
+    assert absolute["names"][-1] == "gripper"
+    assert list(absolute["units"][:4]) == ["m", "m", "m", "normalized" if use_6d else "rad"]

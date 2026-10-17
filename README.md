@@ -43,6 +43,30 @@ For stereo ZED cameras this is the left stream; pass
 `env.camera_types` maps each camera name to its type (`0` = wrist,
 `1` = exterior).
 
+### Space metadata
+
+Every observation and action leaf carries unienv space metadata
+(`space.metadata`, unienv >= 0.0.1b16) describing what it holds; the
+vocabulary is unienv's (`kind`, `units`, `frame`, `rotation`, `names`, ...):
+
+| Leaf | Metadata |
+|---|---|
+| `cartesian_position` | `proprio`, `[m, m, m, rad, rad, rad]`, names `[x, y, z, rx, ry, rz]`, frame `base`, rotation `euler_sxyz` (extrinsic XYZ, transforms3d default) |
+| `end_effector_pos` / `_euler` / `_quaternion` / `_6d_rotation` | `proprio`, frame `base`; `m` / `rad` + `euler_sxyz` / `quat_wxyz` / `rot6d` (first two rows of the rotation matrix) |
+| `gripper_position` | `proprio`, `normalized` (`0` open, `1` closed) |
+| `joint_positions` / `joint_velocities` / `*torques*` | `proprio`, `rad` / `rad/s` / `N*m`, names `fr3_joint1..7` |
+| `prev_controller_latency_ms` / `prev_command_successful` | `state` (`ms` / unitless) |
+| `cam_<name>.rgb` | `image`, `rgb`, `HWC`, source `<name>`, fps 15 |
+| `cam_<name>.depth` | `depth`, `m`, `HW`, source `<name>`, fps 15 |
+| `cam_<name>.intrinsics` / `.extrinsics` | `intrinsics` (`px`) / `extrinsics` (base -> camera), frame `camera_cv`, source `<name>` |
+| action, `cartesian_position` RobotEnv | `action`, control `eef_pose`, mode `absolute`, frame `base`, units `[m]*3 + [rad]*3 (or 6D rows) + [normalized]` |
+| action, `cartesian_velocity` RobotEnv | `action`, control `eef_velocity`, mode `velocity`, `normalized`, frame `base` |
+
+Action bounds follow the mode: `cartesian_velocity` actions are `[-1, 1]`;
+`cartesian_position` actions are `[-1, 1]` m, `[-pi, pi]` rad (or `[-1, 1]`
+6D rows) and a `[0, 1]` gripper. The shared names and builders live in
+`unienv_droid.conventions`, which the raw dataset uses too.
+
 ### Depth units
 
 `DroidEnv` always reports depth in **metres**. Upstream DROID's ZED reader

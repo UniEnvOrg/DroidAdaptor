@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## 0.0.1a5 (unreleased)
 
+- Requires `unienv>=0.0.1b16`. `DroidEnv` observation and action spaces
+  carry unienv space metadata: robot state (`proprio`, units, joint / element
+  names, base frame, `euler_sxyz` / `quat_wxyz` / `rot6d`), cameras (`image`
+  RGB `HWC`, `depth` metres, `intrinsics`, `extrinsics`, source = camera name,
+  fps 15) and the action (`eef_pose` absolute vs `eef_velocity` normalized,
+  per-element names / units). Shared names and builders are in the new
+  `unienv_droid.conventions`.
 - **Behaviour change:** `DroidEnv` now reports depth in metres. The new
   `depth_units` option (`"mm"` default, or `"m"`) describes what the upstream
   `RobotEnv` returns; upstream DROID's ZED reader leaves the SDK default
