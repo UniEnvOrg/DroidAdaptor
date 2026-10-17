@@ -2,8 +2,9 @@
 
 All notable changes to this project will be documented in this file.
 
-## 0.0.1a5 (unreleased)
+## 0.0.1a5 (2026-10-17)
 
+- Relicensed under the Apache License 2.0 (previously MIT); `NOTICE` carries the copyright and third-party attributions.
 - **Breaking — nested `DroidEnv` observation** (no compatibility layer):
   `obs["robot"]["arm"]` (`joint_position`, `joint_velocity`, `joint_torque`,
   `joint_motor_torque`, `eef_position`, `eef_quaternion`, and the controller
