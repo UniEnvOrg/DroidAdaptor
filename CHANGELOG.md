@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## 0.0.1a5 (unreleased)
 
+- **Behaviour change:** `DroidEnv` now reports depth in metres. The new
+  `depth_units` option (`"mm"` default, or `"m"`) describes what the upstream
+  `RobotEnv` returns; upstream DROID's ZED reader leaves the SDK default
+  (millimetres), so depth is divided by 1000 by default. Pass
+  `depth_units="m"` if your camera stack already returns metres.
 - Fixed `RawDroidDataset(read_right=True)`, which raised `AttributeError`
   (`DictSpace` has no `update`) while building its space.
 - Fixed the `svo_convert` docstring: depth is `float32` metres (the SVO is

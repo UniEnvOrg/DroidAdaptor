@@ -218,3 +218,40 @@ def test_velocity_action_bounds_stay_normalized(use_6d):
 def test_unsupported_action_space_raises():
     with pytest.raises(ValueError, match="action_space"):
         DroidEnv(MockRobotEnv("joint_position"))
+
+
+def test_depth_defaults_to_millimetres_and_is_reported_in_metres():
+    robotenv = MockRobotEnv()
+    raw = robotenv.get_observation()["depth"][f"{EXT1}_left"]
+    _, obs, _ = DroidEnv(robotenv).reset()
+    depth = obs[f"cam_{EXT1}"]["depth"]
+    assert depth.dtype == np.float32
+    np.testing.assert_allclose(depth, raw / 1000.0, rtol=1e-6)
+
+
+def test_depth_units_metres_passes_through():
+    robotenv = MockRobotEnv()
+    raw = robotenv.get_observation()["depth"][f"{EXT1}_left"]
+    _, obs, _ = DroidEnv(robotenv, depth_units="m").reset()
+    np.testing.assert_allclose(obs[f"cam_{EXT1}"]["depth"], raw, rtol=1e-6)
+
+
+def test_depth_conversion_follows_flip():
+    robotenv = MockRobotEnv()
+    raw_ramp = np.arange(H * W, dtype=np.float64).reshape(H, W) * 10.0
+    orig = robotenv.get_observation
+
+    def get_observation():
+        out = orig()
+        out["depth"][f"{EXT1}_left"] = raw_ramp.astype(np.uint16)  # e.g. a fork saving uint16 mm
+        return out
+
+    robotenv.get_observation = get_observation
+    _, obs, _ = DroidEnv(robotenv, flip_ext_cams_y=True).reset()
+    np.testing.assert_allclose(obs[f"cam_{EXT1}"]["depth"], raw_ramp[::-1, ::-1] / 1000.0, rtol=1e-6)
+    assert obs[f"cam_{EXT1}"]["depth"].dtype == np.float32
+
+
+def test_depth_units_rejects_unknown():
+    with pytest.raises(ValueError, match="depth_units"):
+        DroidEnv(MockRobotEnv(), depth_units="cm")

@@ -230,6 +230,9 @@ class DroidEnv(Env[
     batch_size = None
     context_space = None
     
+    #: Factor converting upstream depth in each supported unit to metres.
+    DEPTH_UNIT_SCALES = {"mm": 1e-3, "m": 1.0}
+
     SUPPORTED_ACTION_SPACES = ("cartesian_position", "cartesian_velocity")
 
     @staticmethod
@@ -280,6 +283,7 @@ class DroidEnv(Env[
         use_tip_as_eef : bool = False,
         flip_ext_cams_y : Union[bool, Dict[str, bool]] = False,
         include_right_images : bool = False,
+        depth_units : str = "mm",
     ):
         """
         Args:
@@ -299,7 +303,19 @@ class DroidEnv(Env[
             include_right_images: Also expose the right stream of stereo
                 cameras, as ``cam_<serial>_right``. By default only the left
                 stream is exposed, as ``cam_<serial>``.
+            depth_units: Units of the depth maps the upstream ``RobotEnv``
+                returns; ``DroidEnv`` always reports depth in **metres**.
+                ``"mm"`` (default) matches upstream DROID's ZED reader, which
+                opens the camera without setting ``coordinate_units`` (ZED
+                default: millimetres) — its depth retrieval is commented out
+                upstream, so forks that re-enable it get millimetres. Pass
+                ``"m"`` for a stack that already returns metres (e.g. a reader
+                opened with ``coordinate_units = sl.UNIT.METER``).
         """
+        if depth_units not in self.DEPTH_UNIT_SCALES:
+            raise ValueError(
+                f"depth_units must be one of {tuple(self.DEPTH_UNIT_SCALES)}, got {depth_units!r}"
+            )
         if robotenv.action_space not in self.SUPPORTED_ACTION_SPACES:
             raise ValueError(
                 f"DroidEnv supports a RobotEnv with action_space in {self.SUPPORTED_ACTION_SPACES}, "
@@ -313,6 +329,7 @@ class DroidEnv(Env[
         self.use_tip_as_eef = use_tip_as_eef
         self.flip_ext_cams_y = flip_ext_cams_y
         self.include_right_images = include_right_images
+        self.depth_units = depth_units
         self.robotenv = robotenv
 
         robotenv_obs = robotenv.get_observation()
@@ -442,6 +459,9 @@ class DroidEnv(Env[
             rgb = rgb[..., [2,1,0]].astype(np.uint8) # For ZED we get BGRA images, convert to RGB and drop alpha if present
             depth : np.ndarray = robotenv_obs['depth'][cam.source_key]
             depth = depth.astype(np.float32)
+            depth_scale = self.DEPTH_UNIT_SCALES[self.depth_units]
+            if depth_scale != 1.0:
+                depth = depth * np.float32(depth_scale) # -> metres
             intrinsics = np.asarray(robotenv_obs['camera_intrinsics'][cam.source_key], dtype=np.float32)
             camera_extrinsics = robotenv_obs['camera_extrinsics']
             camera_pose = camera_extrinsics[cam.source_key] if cam.source_key in camera_extrinsics else camera_extrinsics[cam.serial]

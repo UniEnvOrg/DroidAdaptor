@@ -36,11 +36,27 @@ while True:
 ```
 
 Each camera is exposed as `obs["cam_<serial>"]` with `rgb` (`uint8`, RGB),
-`depth`, `intrinsics` (OpenCV `3x3`) and `extrinsics` (world -> camera, `3x4`).
+`depth` (`float32`, metres), `intrinsics` (OpenCV `3x3`) and `extrinsics`
+(world -> camera, `3x4`).
 For stereo ZED cameras this is the left stream; pass
 `include_right_images=True` to also get `cam_<serial>_right`.
 `env.camera_types` maps each camera name to its type (`0` = wrist,
 `1` = exterior).
+
+### Depth units
+
+`DroidEnv` always reports depth in **metres**. Upstream DROID's ZED reader
+opens the camera without setting `coordinate_units`, so the ZED SDK default,
+**millimetres**, applies (its depth retrieval is commented out upstream; forks
+that re-enable it return millimetres, as does DROID's own
+`postprocessing/util/svo2depth.py`). `depth_units` describes what the upstream
+`RobotEnv` returns and defaults to `"mm"`, which `DroidEnv` divides by 1000.
+Pass `depth_units="m"` for a camera stack that already returns metres (e.g. a
+reader opened with `coordinate_units = sl.UNIT.METER`):
+
+```python
+env = DroidEnv(robotenv, depth_units="m")
+```
 
 
 ## Usage of Droid Raw Data to retrieve depth
